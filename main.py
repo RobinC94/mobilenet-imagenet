@@ -1,43 +1,61 @@
 #!/usr/bin/python
-import sys, os
+import os
+import keras
 from termcolor import cprint
 
-import keras
+from keras.applications import mobilenet
+from keras.layers.convolutional import Conv2D
 
-import mobilenet_modify as modi
-import mobilenet_train_and_test as trte
+from mobilenet_modify import instantiate_mobilenet, modify_model, cluster_model_kernels, save_cluster_result, load_cluster_result
+from mobilenet_train_and_test import evaluate_model, fine_tune, train_model
+from mobilenet_new import  MobileNet_new
 
 
-#coonfig
-modi.alpha = 1.0; alpha_str = "1_0"
-modi.img_size = 224
+def print_config(alpha, img_size):
+    cprint("alpha is: " + str(alpha), "red")
+    cprint("image size is: " + str((img_size,) * 2), "red")
 
-modi.pair_layers_num = 14
-modi.r_thresh = 0.94
-
-trte.pair_layers_num = modi.pair_layers_num
+def print_conv_layer_info(model):
+    f = open("./tmp/conv_layers_info.txt", "w")
+    f.write("layer index   filter number   filter shape(HWCK)\n")
+    for i, l in enumerate(model.layers):
+        if isinstance(l, Conv2D):
+            if isinstance(l, mobilenet.DepthwiseConv2D):
+                print i, "DepthwiseConv2D", l.name, l.filters, l.depthwise_kernel.shape.as_list()
+                print >> f, i, "DepthwiseConv2D", l.name, l.filters, l.depthwise_kernel.shape.as_list()
+            else:
+                print i, "Conv2D", l.name, l.filters, l.kernel.shape.as_list()
+                print >> f, i, "Conv2D", l.name, l.filters, l.kernel.shape.as_list()
 
 def main():
-    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
-    weights_dir = "./weights"
-    modi.print_config()
-    model = modi.instanciate_mobilenet(weights_dir)
+    os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+
+    alpha = 1
+    img_size = 224
+
+    print_config(alpha, img_size)
+    model = instantiate_mobilenet(alpha, img_size)
     #model.summary()
     keras.utils.plot_model(model, show_shapes=True)
-    modi.print_conv_layer_info(model)
+    print_conv_layer_info(model)
 
-    #trte.evaluate_model2(model)
+    #evaluate_model(model)
     #img_path = "/data1/datasets/imageNet/ILSVRC2016/ILSVRC/Data/CLS-LOC/train/n03884397/n03884397_993.JPEG"
-    #trte.evaluate_model1(model, img_path)
 
-    kmeans_k=256
+    kmeans_k=64
 
-    file = "./tmp/mobilenet_" + str(modi.pair_layers_num) + "_" + str(kmeans_k)
-    modi.modify_model(model,k=kmeans_k,file_save=file)
-    #modi.modified_model_from_file(model,file_load=file)
+    file = "./tmp/mobilenet_" + str(alpha) + "_" + str(img_size) + "_" + str(kmeans_k)
 
-    trte.evaluate_model2(model)
-    trte.fine_tune(model)
+    #cluster_id, temp_kernels = cluster_model_kernels(model, k=kmeans_k, t=3)
+    #save_cluster_result(cluster_id, temp_kernels, file)
+    cluster_id, temp_kernels = load_cluster_result(file)
+
+    model_new = modify_model(model, cluster_id, temp_kernels)
+
+    evaluate_model(model_new)
+    fine_tune(model_new, epoch=5)
+
+    #train_model(model, epoch=10)
 
 if __name__ == "__main__":
     main()

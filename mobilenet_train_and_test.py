@@ -13,21 +13,24 @@ from keras.preprocessing import image
 from keras.preprocessing.image import ImageDataGenerator
 from keras.layers.convolutional import Conv2D
 from keras.optimizers import Adam, SGD
-from keras.callbacks import ReduceLROnPlateau, CSVLogger, EarlyStopping, ModelCheckpoint, TensorBoard
+from keras.callbacks import ReduceLROnPlateau, CSVLogger, EarlyStopping, ModelCheckpoint, TensorBoard, LearningRateScheduler
+from keras.metrics import top_k_categorical_accuracy
 import numpy as np
 import json
+from math import sqrt
 import xml.etree.ElementTree
 
 ##configuration parameters
 alpha = 1.0
 img_size = 224
-img_parent_dir = "/data1/datasets/imageNet/ILSVRC2016/ILSVRC/Data/CLS-LOC/"  # sub_dir: train, val, test
+img_parent_dir = "/home/crb/datasets/imageNet/ILSVRC2016/ILSVRC/Data/CLS-LOC/"  # sub_dir: train, val, test
 
 pair_layers_num = 13
 filter_size = 3
 
-nb_epoch = 320
-batch_size = 32
+nb_epoch = 200
+batch_size = 64
+evaluating_batch_size = 96
 
 ##used in 3rd-party model function
 class_parse_file = "./tmp/imagenet_class_index.json"
@@ -37,25 +40,39 @@ debug_flag = False
 
 
 ## public API
-def evaluate_model1(model, img_path, top=5):
-    img = image.load_img(img_path, target_size=(img_size, img_size))
-    img = image.img_to_array(img)
-    img = np.expand_dims(img, axis=0)
-
-    img = mobilenet.preprocess_input(img)  ##mobilenet uses its own way to preprocess images
-    preds = model.predict(img)
-    print 'Predicted:', decode_predictions(preds, top)
-    return decode_predictions(preds, top)
-
-
-def evaluate_model2(model):
-    nb_eval = 10000
+def evaluate_model(model):
+    nb_eval = 50000
     data_gen = evaluating_data_gen()
-    model.compile(loss='categorical_crossentropy', optimizer=Adam(lr=1e-4), metrics=['accuracy'])
-    res = model.evaluate_generator(generator=data_gen, steps=nb_eval / batch_size)
-    cprint("modified acc:" + str(res[1]), "red")
+    model.compile(loss='categorical_crossentropy', optimizer=Adam(lr=1e-4), metrics=['accuracy', acc_top5])
+    res = model.evaluate_generator(generator=data_gen,
+                                   steps=nb_eval / evaluating_batch_size,
+                                   use_multiprocessing=True,
+                                   workers=16,
+                                   max_q_size=16)
+    cprint("top1 acc:" + str(res[1]), "red")
+    cprint("top5 acc:" + str(res[2]), "red")
 
-def fine_tune(model):
+def train_model(model, epoch = nb_epoch):
+    model.compile(loss='categorical_crossentropy', optimizer=SGD(lr=lr_fine_tune_schedule(0), momentum=0.9, decay=0.0001), metrics=['accuracy'])
+    lr_scheduler = LearningRateScheduler(lr_fine_tune_schedule)
+    lr_reducer = ReduceLROnPlateau(factor=np.sqrt(0.1), cooldown=0, patience=5, min_lr=0.5e-6)
+    early_stopper = EarlyStopping(min_delta=0.001, patience=10)
+    csv_logger = CSVLogger('./result/train_mobilenet_imagenet.csv')
+    ckpt = ModelCheckpoint(filepath="./weights/mobilenet_train_weights.{epoch:02d}.h5", monitor='loss', save_best_only=True,
+                           save_weights_only=True)
+    model.fit_generator(generator=training_data_gen(),
+                        steps_per_epoch=1281167 / batch_size,  # 1281167 is the number of training data we have
+                        validation_data=evaluating_data_gen(),
+                        validation_steps=50000 / batch_size,
+                        epochs=epoch, verbose=1, max_q_size=32,
+                        workers=12,
+                        use_multiprocessing=True,
+                        callbacks=[lr_reducer, early_stopper, csv_logger, ckpt, lr_scheduler])
+    cprint("training is done\n", "yellow")
+
+
+
+def fine_tune(model, epoch = nb_epoch):
     # fix paired layers
     conv_layers_list = get_conv_layers_list(model)
     for layer_index in conv_layers_list:
@@ -63,35 +80,34 @@ def fine_tune(model):
     print "#########################"
     # compile model to make modification effect!!!
     # model.compile(loss='categorical_crossentropy', optimizer=SGD(lr=1e-4), metrics=['accuracy'])
-    model.compile(loss='categorical_crossentropy', optimizer=Adam(lr=1e-4), metrics=['accuracy'])
+    model.compile(loss='categorical_crossentropy', optimizer=SGD(lr=lr_fine_tune_schedule(0), momentum=0.9, decay=0.0001), metrics=['accuracy'])
     # fine tune
+    lr_scheduler = LearningRateScheduler(lr_fine_tune_schedule)
     lr_reducer = ReduceLROnPlateau(factor=np.sqrt(0.1), cooldown=0, patience=5, min_lr=0.5e-6)
     early_stopper = EarlyStopping(min_delta=0.001, patience=10)
-    csv_logger = CSVLogger('./fine_tune_mobilenet_cifar10.csv')
-    ckpt = ModelCheckpoint(filepath="./fine_tune_weights.h5", monitor='loss', save_best_only=True,
+    csv_logger = CSVLogger('./result/fine_tune_mobilenet_imagenet.64.csv')
+    ckpt = ModelCheckpoint(filepath="./weights/mobilenet_fine_tune_weights.64.{epoch:02d}.h5", monitor='loss', save_best_only=True,
                            save_weights_only=True)
     tensorboard = TensorBoard(log_dir='./logs', histogram_freq=1, write_images=True)
     model.fit_generator(generator=training_data_gen(),
                         steps_per_epoch=1281167 / batch_size,  # 1281167 is the number of training data we have
-                        validation_data=training_data_gen(),
+                        validation_data=evaluating_data_gen(),
                         validation_steps=50000 / batch_size,
-                        epochs=nb_epoch, verbose=1, max_q_size=32,
-                        workers=8,
-                        use_multiprocessing=False,
-                        callbacks=[lr_reducer, early_stopper, csv_logger, ckpt])
+                        epochs=epoch, verbose=1, max_q_size=32,
+                        workers=12,
+                        use_multiprocessing=True,
+                        callbacks=[lr_reducer, early_stopper, csv_logger, ckpt, lr_scheduler])
     cprint("fine tune is done\n", "yellow")
 
 
 ##private API
+def acc_top5(y_true, y_pred):
+    return top_k_categorical_accuracy(y_true, y_pred, k=5)
+
 def training_data_gen():
     datagen = ImageDataGenerator(
-
-        rotation_range=10,  # randomly rotate images in the range (degrees, 0 to 180)
-
-        width_shift_range=0.1,  # randomly shift images horizontally (fraction of total width)
-        height_shift_range=0.1,  # randomly shift images vertically (fraction of total height)
+        channel_shift_range=10,
         horizontal_flip=True,  # randomly flip images
-        vertical_flip=True,  # randomly flip images
 
         preprocessing_function=mobilenet.preprocess_input)
 
@@ -108,60 +124,36 @@ def training_data_gen():
 
 
 def evaluating_data_gen():
-    def img_generator():
+    datagen = ImageDataGenerator(
+        preprocessing_function=mobilenet.preprocess_input)
 
-        img_parent_dir = "/data1/datasets/imageNet/ILSVRC2016/ILSVRC/Data/CLS-LOC/"
-        img_dir = os.path.join(img_parent_dir, "val")
-        file_data_list = os.listdir(img_dir)
-        file_data_array = [file_data_list[i * batch_size:(i + 1) * batch_size] for i in
-                           range(len(file_data_list) / batch_size)]
-        if debug_flag:
-            print len(file_data_array)
-            print file_data_array
-        iterator = itertools.cycle(file_data_array)
-        while (1):
-            batch_data_list = iterator.next()
-            imgs = get_evaluating_batch_imgs(batch_data_list)
-            labels = get_evaluating_image_labels(batch_data_list)
-            yield imgs, labels
-
-    return img_generator()
-
-
-def get_evaluating_batch_imgs(batch_data_list):
-    img_parent_dir = "/data1/datasets/imageNet/ILSVRC2016/ILSVRC/Data/CLS-LOC/"
     img_dir = os.path.join(img_parent_dir, "val")
-    img_array = np.empty(shape=(batch_size, img_size, img_size, 3), dtype=float)
+    img_generator = datagen.flow_from_directory(
+        directory=img_dir,
+        target_size=(img_size, img_size),
+        color_mode="rgb",
+        class_mode="categorical",
+        batch_size=evaluating_batch_size,
+        shuffle=True)
 
-    for index, i in enumerate(batch_data_list):
-        img_path = os.path.join(img_dir, i)
-        if debug_flag:
-            print img_path
-        img = image.load_img(img_path, target_size=(img_size, img_size))
-        img = image.img_to_array(img)
-        img = mobilenet.preprocess_input(img)  ##mobilenet uses its own way to preprocess images
-        img_array[index, ...] = img
-    return img_array
-
-
-def get_evaluating_image_labels(batch_data_list):
-    img_parent_dir = "/data1/datasets/imageNet/ILSVRC2016/ILSVRC/Annotations/CLS-LOC/"
-    img_dir = os.path.join(img_parent_dir, "val")
-    indice_array = np.empty(shape=(batch_size, 1000), dtype=float)
-
-    for index, i in enumerate(batch_data_list):
-        i = i[:-4] + "xml"
-        file_name = os.path.join(img_dir, i)
-        digit_name = xml.etree.ElementTree.parse(file_name).getroot().findall("object")[0].findall("name")[0].text
-        indice = digit_indice_dict[digit_name]
-        indice = to_categorical(indice, num_classes=1000)
-        indice_array[index] = indice
-    return indice_array
+    return img_generator
 
 
 def generate_digit_indice_dict():
     digit_indice_dict = {value[0]: int(key) for key, value in imagenet_utils.CLASS_INDEX.items()}
     return digit_indice_dict
+
+def lr_fine_tune_schedule(epoch):
+    lr = 1e-4
+    lr *= sqrt(0.1)
+    if epoch >= 6:
+        lr *= sqrt(0.1)
+    if epoch >= 4:
+        lr *= sqrt(0.1)
+    if epoch >= 2:
+        lr *= sqrt(0.1)
+    print('Learning rate: ', lr)
+    return lr
 
 
 def get_conv_layers_list(model):
