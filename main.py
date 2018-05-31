@@ -2,6 +2,8 @@
 import os
 import keras
 from termcolor import cprint
+from keras.backend.tensorflow_backend import set_session
+import tensorflow as tf
 
 from keras.applications import mobilenet
 from keras.layers.convolutional import Conv2D
@@ -28,7 +30,10 @@ def print_conv_layer_info(model):
                 print >> f, i, "Conv2D", l.name, l.filters, l.kernel.shape.as_list()
 
 def main():
-    os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+    os.environ['CUDA_VISIBLE_DEVICES'] = '3'
+    config = tf.ConfigProto()
+    #config.gpu_options.per_process_gpu_memory_fraction = 0.6
+    set_session(tf.Session(config=config))
 
     alpha = 1
     img_size = 224
@@ -42,18 +47,21 @@ def main():
     #evaluate_model(model)
     #img_path = "/data1/datasets/imageNet/ILSVRC2016/ILSVRC/Data/CLS-LOC/train/n03884397/n03884397_993.JPEG"
 
-    kmeans_k=64
+    kmeans_k=512
 
-    file = "./tmp/mobilenet_" + str(alpha) + "_" + str(img_size) + "_" + str(kmeans_k)
+    file = "./tmp/mobilenet_test_" + str(alpha) + "_" + str(img_size) + "_" + str(kmeans_k)
 
     #cluster_id, temp_kernels = cluster_model_kernels(model, k=kmeans_k, t=3)
     #save_cluster_result(cluster_id, temp_kernels, file)
     cluster_id, temp_kernels = load_cluster_result(file)
 
+    #file = "./tmp/mobilenet_" + str(alpha) + "_" + str(img_size) + "_" + str(kmeans_k)
+    #save_cluster_result(cluster_id, temp_kernels, file)
+
     model_new = modify_model(model, cluster_id, temp_kernels)
 
     evaluate_model(model_new)
-    fine_tune(model_new, epoch=5)
+    fine_tune(model_new, epoch=10)
 
     #train_model(model, epoch=10)
 

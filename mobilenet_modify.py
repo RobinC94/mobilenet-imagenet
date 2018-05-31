@@ -46,8 +46,8 @@ def instantiate_mobilenet(alpha, img_size):
         raise ValueError('alpha wrong.')
 
     model = MobileNet(input_shape=(img_size, img_size, 3), alpha=alpha, include_top=True, weights=None)
-    model.load_weights("weights/mobilenet_train_weights_69.79.h5")
-    #model.load_weights("/home/crb/Desktop/mobilenet_1_0_224_tf_1.h5")
+    #model.load_weights("weights/mobilenet_train_weights_69.79.h5")
+    model.load_weights("weights/mobilenet_1_0_224_tf.h5")
 
     return model
 

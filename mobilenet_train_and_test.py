@@ -12,7 +12,7 @@ from keras.applications import mobilenet
 from keras.preprocessing import image
 from keras.preprocessing.image import ImageDataGenerator
 from keras.layers.convolutional import Conv2D
-from keras.optimizers import Adam, SGD
+from keras.optimizers import Adam, SGD, Adadelta
 from keras.callbacks import ReduceLROnPlateau, CSVLogger, EarlyStopping, ModelCheckpoint, TensorBoard, LearningRateScheduler
 from keras.metrics import top_k_categorical_accuracy
 import numpy as np
@@ -53,7 +53,7 @@ def evaluate_model(model):
     cprint("top5 acc:" + str(res[2]), "red")
 
 def train_model(model, epoch = nb_epoch):
-    model.compile(loss='categorical_crossentropy', optimizer=SGD(lr=lr_fine_tune_schedule(0), momentum=0.9, decay=0.0001), metrics=['accuracy'])
+    model.compile(loss='categorical_crossentropy', optimizer=Adadelta(lr=lr_fine_tune_schedule(0), decay=0.0001), metrics=['accuracy', acc_top5])
     lr_scheduler = LearningRateScheduler(lr_fine_tune_schedule)
     lr_reducer = ReduceLROnPlateau(factor=np.sqrt(0.1), cooldown=0, patience=5, min_lr=0.5e-6)
     early_stopper = EarlyStopping(min_delta=0.001, patience=10)
@@ -73,20 +73,15 @@ def train_model(model, epoch = nb_epoch):
 
 
 def fine_tune(model, epoch = nb_epoch):
-    # fix paired layers
-    conv_layers_list = get_conv_layers_list(model)
-    for layer_index in conv_layers_list:
-        model.layers[layer_index].trainable = False
-    print "#########################"
     # compile model to make modification effect!!!
-    # model.compile(loss='categorical_crossentropy', optimizer=SGD(lr=1e-4), metrics=['accuracy'])
-    model.compile(loss='categorical_crossentropy', optimizer=SGD(lr=lr_fine_tune_schedule(0), momentum=0.9, decay=0.0001), metrics=['accuracy'])
+    model.compile(loss='categorical_crossentropy', optimizer=SGD(lr=lr_fine_tune_schedule(0), momentum=0.9, decay=0.0001), metrics=['accuracy', acc_top5])
+    #model.compile(loss='categorical_crossentropy', optimizer=Adadelta(lr=lr_fine_tune_schedule(0)), metrics=['accuracy', acc_top5])
     # fine tune
     lr_scheduler = LearningRateScheduler(lr_fine_tune_schedule)
     lr_reducer = ReduceLROnPlateau(factor=np.sqrt(0.1), cooldown=0, patience=5, min_lr=0.5e-6)
     early_stopper = EarlyStopping(min_delta=0.001, patience=10)
-    csv_logger = CSVLogger('./result/fine_tune_mobilenet_imagenet.64.csv')
-    ckpt = ModelCheckpoint(filepath="./weights/mobilenet_fine_tune_weights.64.{epoch:02d}.h5", monitor='loss', save_best_only=True,
+    csv_logger = CSVLogger('./result/fine_tune_mobilenet_imagenet.512.csv')
+    ckpt = ModelCheckpoint(filepath="./weights/mobilenet_fine_tune_weights.512.{epoch:02d}.h5", monitor='loss', save_best_only=True,
                            save_weights_only=True)
     tensorboard = TensorBoard(log_dir='./logs', histogram_freq=1, write_images=True)
     model.fit_generator(generator=training_data_gen(),
@@ -145,12 +140,13 @@ def generate_digit_indice_dict():
 
 def lr_fine_tune_schedule(epoch):
     lr = 1e-4
-    lr *= sqrt(0.1)
-    if epoch >= 6:
+    if epoch >= 7:
         lr *= sqrt(0.1)
-    if epoch >= 4:
+    if epoch >= 5:
         lr *= sqrt(0.1)
-    if epoch >= 2:
+    if epoch >= 3:
+        lr *= sqrt(0.1)
+    if epoch >= 1:
         lr *= sqrt(0.1)
     print('Learning rate: ', lr)
     return lr
